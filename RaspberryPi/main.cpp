@@ -3,126 +3,157 @@
 #include <opencv2/opencv.hpp>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <vector>
-#include <string>
-#include <chrono>
+#include <csignal>
 
-// --- Global Data Structure ---
+// --- GLOBAL STATE ---
+std::atomic<bool> is_running{true};
+std::vector<uchar> global_frame_buffer;
+std::mutex frame_mtx;
+
 struct DroneState {
-    float alt = 0.0;
-    int heading = 0;
-    float battery = 12.6;
+    float alt = 10.5;
+    int heading = 180;
     std::mutex mtx;
 } drone_state;
 
-// --- MAVLink Mock Worker ---
+// Signal handler for Ctrl+C
+void signal_handler(int s) {
+    is_running = false;
+    std::cout << "\nShutting down Corvus GCS..." << std::endl;
+    exit(0);
+}
+
+// --- CAMERA WORKER: Handles hardware stutters and timeouts ---
+void camera_worker() {
+    // Pi 5 specific pipeline
+    std::string pipeline = "libcamerasrc ! video/x-raw, width=640, height=480, format=NV12 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1";
+    cv::VideoCapture cap;
+
+    while (is_running) {
+        // Attempt to open if not connected
+        if (!cap.isOpened()) {
+            std::cout << "[CAMERA] Connecting to IMX415..." << std::endl;
+            cap.open(pipeline, cv::CAP_GSTREAMER);
+            if (!cap.isOpened()) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
+            }
+        }
+
+        cv::Mat frame;
+        // Safety check to prevent "Assertion failed" crash
+        if (cap.grab()) { 
+            if (cap.retrieve(frame) && !frame.empty()) {
+                std::vector<uchar> buf;
+                cv::imencode(".jpg", frame, buf, {cv::IMWRITE_JPEG_QUALITY, 60});
+                
+                std::lock_guard<std::mutex> lock(frame_mtx);
+                global_frame_buffer = std::move(buf);
+            }
+        } else {
+            // Hardware timeout occurred (like your previous log showed)
+            std::cerr << "[CAMERA] Hardware timeout! Re-initializing..." << std::endl;
+            cap.release(); 
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+}
+
+// --- TELEMETRY WORKER ---
 void telemetry_worker() {
-    while (true) {
+    while (is_running) {
         {
             std::lock_guard<std::mutex> lock(drone_state.mtx);
-            // Simulate realistic flight telemetry
-            drone_state.alt += (rand() % 10 - 5) * 0.02f; 
-            drone_state.heading = (drone_state.heading + 1) % 360; 
-            if (drone_state.battery > 10.5) drone_state.battery -= 0.001f;
+            drone_state.alt += (rand() % 10 - 5) * 0.05f;
+            drone_state.heading = (drone_state.heading + 1) % 360;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
 
 int main() {
+    std::signal(SIGINT, signal_handler);
     crow::SimpleApp app;
 
-    // --- Camera Setup ---
-    cv::VideoCapture cap(0, cv::CAP_V4L2);
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-    cap.set(cv::CAP_PROP_FPS, 30);
-
-    if (!cap.isOpened()) {
-        std::cerr << "Error: Could not open camera!" << std::endl;
-        return -1;
-    }
-
-    // --- Main Route (Frontend) ---
+    // --- 1. Main Dashboard UI ---
     CROW_ROUTE(app, "/")([](){
         return R"(
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Pi-Pixhawk GCS</title>
+                <title>freaking work u idiot</title>
                 <style>
-                    body { font-family: sans-serif; background: #1a1a1a; color: white; text-align: center; }
-                    .container { display: flex; flex-direction: column; align-items: center; padding: 20px; }
-                    img { border: 4px solid #444; border-radius: 8px; width: 640px; background: #000; }
-                    .telemetry { margin-top: 20px; display: grid; grid-template-columns: repeat(3, 150px); gap: 20px; }
-                    .stat { background: #333; padding: 15px; border-radius: 10px; border-bottom: 4px solid #007bff; }
-                    .val { font-size: 1.5em; font-weight: bold; color: #007bff; }
+                    body { background: #121212; color: white; text-align: center; font-family: sans-serif; margin: 0; padding: 20px; }
+                    .card { display: inline-block; background: #1e1e1e; padding: 15px; margin: 10px; border-radius: 8px; border-bottom: 4px solid #007bff; min-width: 120px; }
+                    .val { font-size: 1.8em; font-weight: bold; color: #007bff; }
+                    img { width: 640px; height: 480px; border: 2px solid #333; background: #000; margin-top: 15px; }
                 </style>
             </head>
             <body>
-                <div class='container'>
-                    <h1>CORVUS LIVE GCS</h1>
-                    <img src='/video_feed'>
-                    <div class='telemetry'>
-                        <div class='stat'>ALTITUDE<br><span id='alt' class='val'>0</span> m</div>
-                        <div class='stat'>HEADING<br><span id='head' class='val'>0</span>&deg;</div>
-                        <div class='stat'>BATTERY<br><span id='batt' class='val'>0</span> V</div>
-                    </div>
-                </div>
+                <h1>CORVUS GROUND CONTROL</h1>
+                <div class="card">ALTITUDE<br><span id="alt" class="val">0.0</span> m</div>
+                <div class="card">HEADING<br><span id="head" class="val">0</span>&deg;</div>
+                <br>
+                <img id="stream" src="">
+                
                 <script>
+                    // Snapshot loop: Asks for a frame, waits for it, then asks again
+                    const img = document.getElementById('stream');
+                    function loadFrame() {
+                        img.src = "/snapshot?t=" + new Date().getTime();
+                    }
+                    img.onload = () => setTimeout(loadFrame, 30); // ~30 FPS
+                    img.onerror = () => setTimeout(loadFrame, 1000); // Retry slow if error
+                    loadFrame();
+
+                    // Telemetry WebSocket
                     var ws = new WebSocket('ws://' + location.host + '/ws');
-                    ws.onmessage = function(event) {
-                        var data = JSON.parse(event.data);
-                        document.getElementById('alt').innerText = data.alt.toFixed(2);
-                        document.getElementById('head').innerText = data.heading;
-                        document.getElementById('batt').innerText = data.batt.toFixed(2);
+                    ws.onmessage = function(v) {
+                        var d = JSON.parse(v.data);
+                        document.getElementById('alt').innerText = d.alt.toFixed(1);
+                        document.getElementById('head').innerText = d.head;
                     };
-                    setInterval(() => { if(ws.readyState === 1) ws.send('get'); }, 100);
+                    setInterval(() => { if(ws.readyState === 1) ws.send('u'); }, 200);
                 </script>
             </body>
             </html>
         )";
     });
 
-    // --- Video Streaming Route (Corrected for Crow 1.1.0) ---
-    CROW_ROUTE(app, "/video_feed")([&cap](const crow::request& req, crow::response& res) {
-        res.set_header("Content-Type", "multipart/x-mixed-replace; boundary=frame");
-        while (true) {
-            cv::Mat frame;
-            cap >> frame;
-            if (frame.empty()) break;
-
-            std::vector<uchar> buf;
-            cv::imencode(".jpg", frame, buf, {cv::IMWRITE_JPEG_QUALITY, 70});
-            
-            std::string body(buf.begin(), buf.end());
-            std::string header = "\r\n--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n";
-            
-            res.write(header + body);
-            
-            // Short sleep to prevent CPU Max-out
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    // --- 2. Snapshot API ---
+    CROW_ROUTE(app, "/snapshot")([](){
+        std::string data;
+        {
+            std::lock_guard<std::mutex> lock(frame_mtx);
+            if (global_frame_buffer.empty()) return crow::response(404);
+            data = std::string(global_frame_buffer.begin(), global_frame_buffer.end());
         }
-        res.end();
+        crow::response res(data);
+        res.set_header("Content-Type", "image/jpeg");
+        res.set_header("Connection", "close");
+        return res;
     });
 
-    // --- WebSocket Route (Corrected with &app pointer) ---
+    // --- 3. WebSocket ---
     CROW_ROUTE(app, "/ws").websocket(&app)
         .onmessage([&](crow::websocket::connection& conn, const std::string& data, bool is_binary) {
             crow::json::wvalue msg;
             {
                 std::lock_guard<std::mutex> lock(drone_state.mtx);
                 msg["alt"] = drone_state.alt;
-                msg["heading"] = drone_state.heading;
-                msg["batt"] = drone_state.battery;
+                msg["head"] = drone_state.heading;
             }
             conn.send_text(msg.dump());
         });
 
-    // Start threads and server
-    std::thread worker(telemetry_worker);
-    worker.detach();
+    // Launch background workers
+    std::thread cam_thread(camera_worker);
+    std::thread tel_thread(telemetry_worker);
+    cam_thread.detach();
+    tel_thread.detach();
 
-    std::cout << "GCS Server starting on http://0.0.0.0:5000" << std::endl;
-    app.port(5000).multithreaded().run();
+    std::cout << "Corvus GCS active on http://0.0.0.0:5000" << std::endl;
+    app.port(5000).bindaddr("0.0.0.0").multithreaded().run();
 }
