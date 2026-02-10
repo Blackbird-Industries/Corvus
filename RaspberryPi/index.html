@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CORVUS GCS</title>
+    <style>
+        body { background: #0b0e14; color: #00ffcc; font-family: 'Courier New', monospace; text-align: center; }
+        .hud { border: 2px solid #00ffcc; padding: 20px; display: inline-block; margin-top: 20px; }
+        .stat { font-size: 1.5em; margin: 10px; }
+        img { width: 80%; border: 1px solid #444; }
+    </style>
+</head>
+<body>
+    <h1>SYSTEM CORVUS - LIVE FEED</h1>
+    <img src="/video">
+    <div class="hud">
+        <div class="stat">TAG ID: <span id="tag">-</span></div>
+        <div class="stat">ALTITUDE: <span id="alt">0.0</span>m</div>
+        <div class="stat">BATTERY: <span id="bat">0</span>%</div>
+    </div>
+
+    <script>
+        setInterval(() => {
+            fetch('/api/status').then(r => r.json()).then(data => {
+                document.getElementById('tag').innerText = data.tag_id == -1 ? "NONE" : data.tag_id;
+                document.getElementById('alt').innerText = data.alt.toFixed(1);
+                document.getElementById('bat').innerText = data.bat;
+            });
+        }, 200);
+    </script>
+</body>
+</html>
