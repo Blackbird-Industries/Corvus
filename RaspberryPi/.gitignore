@@ -1,1 +1,6 @@
 build/
+.cache/
+bin/
+*.o
+*.so
+corvus_gcs

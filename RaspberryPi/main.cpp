@@ -1,128 +1,153 @@
+#define CROW_MAIN
 #include "crow_all.h"
 #include <opencv2/opencv.hpp>
 #include <apriltag/apriltag.h>
 #include <apriltag/tag36h11.h>
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
-#include <vector>
+#include <thread>
 #include <mutex>
 #include <atomic>
-#include <thread>
+#include <vector>
 
 using namespace mavsdk;
 
-// --- Global State ---
-std::mutex frame_mutex;
-cv::Mat global_frame;
+// --- GLOBAL STATE ---
+std::atomic<bool> is_running{true};
+std::vector<uchar> global_frame_buffer;
+std::mutex frame_mtx;
 std::atomic<int> latest_tag_id{-1};
 std::atomic<float> drone_alt{0.0f};
 std::atomic<float> drone_bat{0.0f};
-std::atomic<bool> is_connected{false};
+std::atomic<bool> fc_connected{false};
 
-// --- Telemetry Thread: Talk to Pixhawk ---
-void telemetry_worker() {
-    Mavsdk mavsdk{Mavsdk::Configuration{Mavsdk::ComponentType::GroundStation}};
-    // Connect via USB-C (usually /dev/ttyACM0)
-    ConnectionResult conn_res = mavsdk.add_any_connection("serial:///dev/ttyACM0:115200");
-    
-    if (conn_res != ConnectionResult::Success) return;
-
-    // Wait for the drone to appear
-    while (mavsdk.systems().empty()) { std::this_thread::sleep_for(std::chrono::seconds(1)); }
-    
-    auto system = mavsdk.systems()[0];
-    auto telemetry = Telemetry{system};
-    is_connected = true;
-
-    telemetry.subscribe_position([](Telemetry::Position pos) {
-        drone_alt = pos.relative_altitude_m;
-    });
-
-    telemetry.subscribe_battery([](Telemetry::Battery bat) {
-        drone_bat = bat.remaining_percent * 100.0f;
-    });
-
-    while (true) { std::this_thread::sleep_for(std::chrono::seconds(1)); }
-}
-
-// --- Camera Thread: AprilTags + OpenCV ---
+// --- CAMERA & APRILTAG WORKER ---
 void camera_worker() {
-    cv::VideoCapture cap(0); // 0 for default Pi camera
-    if (!cap.isOpened()) return;
+    // This is your "Golden Pipeline" that worked!
+    std::string pipeline = "libcamerasrc ! video/x-raw, width=640, height=480, format=NV12 ! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1";
+    cv::VideoCapture cap;
 
+    // AprilTag Setup
     apriltag_family_t *tf = tag36h11_create();
     apriltag_detector_t *td = apriltag_detector_create();
     apriltag_detector_add_family(td, tf);
 
-    cv::Mat frame, gray;
-    while (true) {
-        cap >> frame;
-        if (frame.empty()) continue;
-
-        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-
-        // Map OpenCV Mat to AprilTag structure
-        image_u8_t img = { .width = gray.cols, .height = gray.rows, 
-                           .stride = gray.cols, .buf = gray.data };
-
-        zarray_t *detections = apriltag_detector_detect(td, &img);
-        
-        int found_id = -1;
-        for (int i = 0; i < zarray_size(detections); i++) {
-            apriltag_detection_t *det;
-            zarray_get(detections, i, &det);
-            found_id = det->id;
-
-            // Draw bounding box on the frame
-            for (int j=0; j<4; j++) {
-                cv::line(frame, cv::Point(det->p[j][0], det->p[j][1]),
-                         cv::Point(det->p[(j+1)%4][0], det->p[(j+1)%4][1]),
-                         cv::Scalar(0, 255, 0), 2);
+    while (is_running) {
+        if (!cap.isOpened()) {
+            std::cout << "[CAMERA] Connecting to IMX415..." << std::endl;
+            cap.open(pipeline, cv::CAP_GSTREAMER);
+            if (!cap.isOpened()) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
             }
         }
-        latest_tag_id = found_id;
 
-        {
-            std::lock_guard<std::mutex> lock(frame_mutex);
-            frame.copyTo(global_frame);
+        cv::Mat frame, gray;
+        if (cap.grab() && cap.retrieve(frame) && !frame.empty()) {
+            // AprilTag Detection Logic
+            cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+            image_u8_t img = { .width = gray.cols, .height = gray.rows, .stride = gray.cols, .buf = gray.data };
+            zarray_t *detections = apriltag_detector_detect(td, &img);
+
+            int found_id = -1;
+            for (int i = 0; i < zarray_size(detections); i++) {
+                apriltag_detection_t *det;
+                zarray_get(detections, i, &det);
+                found_id = det->id;
+                // Draw a simple box on the frame
+                for (int j=0; j<4; j++) {
+                    cv::line(frame, cv::Point(det->p[j][0], det->p[j][1]),
+                             cv::Point(det->p[(j+1)%4][0], det->p[(j+1)%4][1]),
+                             cv::Scalar(0, 255, 0), 2);
+                }
+            }
+            latest_tag_id = found_id;
+            zarray_destroy(detections);
+
+            // Encode for Web
+            std::vector<uchar> buf;
+            cv::imencode(".jpg", frame, buf, {cv::IMWRITE_JPEG_QUALITY, 70});
+            
+            std::lock_guard<std::mutex> lock(frame_mtx);
+            global_frame_buffer = std::move(buf);
+        } else {
+            cap.release();
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
-        zarray_destroy(detections);
     }
+    
+    apriltag_detector_destroy(td);
+    tag36h11_destroy(tf);
 }
 
-// --- Main App: Crow Server ---
+// --- TELEMETRY WORKER (MAVSDK v3) ---
+void telemetry_worker() {
+    Mavsdk mavsdk{Mavsdk::Configuration{ComponentType::GroundStation}};
+    ConnectionResult conn_res = mavsdk.add_any_connection("serial:///dev/ttyACM0:115200");
+
+    if (conn_res != ConnectionResult::Success) {
+        std::cout << "[TELEMETRY] Pixhawk not found. Offline mode." << std::endl;
+        return; 
+    }
+
+    while (mavsdk.systems().empty()) { std::this_thread::sleep_for(std::chrono::seconds(1)); }
+    
+    auto system = mavsdk.systems()[0];
+    auto telemetry = Telemetry{system};
+    fc_connected = true;
+
+    telemetry.subscribe_position([](Telemetry::Position pos) { drone_alt = pos.relative_altitude_m; });
+    telemetry.subscribe_battery([](Telemetry::Battery bat) { drone_bat = bat.remaining_percent * 100.0f; });
+
+    while (is_running) { std::this_thread::sleep_for(std::chrono::seconds(1)); }
+}
+
 int main() {
     crow::SimpleApp app;
 
-    std::thread cam_t(camera_worker);
-    std::thread tel_t(telemetry_worker);
+    // The logic to find index.html if you want to use a file, 
+    // but I'll keep the route internal for now for maximum stability.
+    CROW_ROUTE(app, "/")([](){
+        return "<html><body style='background:#121212;color:white;text-align:center;font-family:sans-serif;'>"
+               "<h1>CORVUS GCS</h1>"
+               "<div style='font-size:1.5em;'>ALT: <span id='alt'>0</span>m | BAT: <span id='bat'>0</span>% | TAG: <span id='tag'>-1</span></div>"
+               "<img id='stream' src='' style='margin-top:20px; border:2px solid #444;'>"
+               "<script>"
+               "const img = document.getElementById('stream');"
+               "function loadFrame() { img.src = '/snapshot?t=' + new Date().getTime(); }"
+               "img.onload = () => setTimeout(loadFrame, 30);"
+               "loadFrame();"
+               "setInterval(() => { fetch('/api/status').then(r=>r.json()).then(d=>{ "
+               "document.getElementById('alt').innerText=d.alt.toFixed(1);"
+               "document.getElementById('bat').innerText=d.bat;"
+               "document.getElementById('tag').innerText=d.tag_id;"
+               "}); }, 200);"
+               "</script></body></html>";
+    });
 
-    // API: Unified Data Endpoint
-    CROW_ROUTE(app, "/api/status")([]{
+    CROW_ROUTE(app, "/snapshot")([](){
+        std::lock_guard<std::mutex> lock(frame_mtx);
+        if (global_frame_buffer.empty()) return crow::response(404);
+        crow::response res(std::string(global_frame_buffer.begin(), global_frame_buffer.end()));
+        res.set_header("Content-Type", "image/jpeg");
+        return res;
+    });
+
+    CROW_ROUTE(app, "/api/status")([](){
         crow::json::wvalue x;
-        x["tag_id"] = (int)latest_tag_id;
         x["alt"] = (float)drone_alt;
         x["bat"] = (int)drone_bat;
-        x["fc_connected"] = (bool)is_connected;
+        x["tag_id"] = (int)latest_tag_id;
+        x["connected"] = (bool)fc_connected;
         return x;
     });
 
-    // API: Video Stream
-    CROW_ROUTE(app, "/video")([&](const crow::request&, crow::response& res){
-        res.set_header("Content-Type", "multipart/x-mixed-replace; boundary=frame");
-        while (true) {
-            std::vector<uchar> buf;
-            {
-                std::lock_guard<std::mutex> lock(frame_mutex);
-                if (global_frame.empty()) continue;
-                cv::imencode(".jpg", global_frame, buf);
-            }
-            std::string out = "--frame\r\nContent-Type: image/jpeg\r\n\r\n" + 
-                              std::string(buf.begin(), buf.end()) + "\r\n";
-            res.write(out);
-            std::this_thread::sleep_for(std::chrono::milliseconds(40));
-        }
-    });
+    std::thread cam_thread(camera_worker);
+    std::thread tel_thread(telemetry_worker);
 
-    app.port(8080).run();
+    app.port(5000).bindaddr("0.0.0.0").multithreaded().run();
+
+    is_running = false;
+    if(cam_thread.joinable()) cam_thread.join();
+    if(tel_thread.joinable()) tel_thread.join();
 }
