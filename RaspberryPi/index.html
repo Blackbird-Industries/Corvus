@@ -3,29 +3,107 @@
 <head>
     <title>CORVUS GCS</title>
     <style>
-        body { background: #0b0e14; color: #00ffcc; font-family: 'Courier New', monospace; text-align: center; }
-        .hud { border: 2px solid #00ffcc; padding: 20px; display: inline-block; margin-top: 20px; }
-        .stat { font-size: 1.5em; margin: 10px; }
-        img { width: 80%; border: 1px solid #444; }
+        body { 
+            font-family: 'Segoe UI', Roboto, sans-serif; 
+            background: #0a0a0c; 
+            color: #d1d1d1; 
+            text-align: center; 
+            margin: 0; 
+        }
+        
+        h1 { 
+            background: #4b0082; /* Indigo Accent */
+            color: #ffffff; 
+            margin: 0; 
+            padding: 15px; 
+            font-size: 1.3em; 
+            letter-spacing: 3px;
+            box-shadow: 0 2px 20px rgba(75, 0, 130, 0.4);
+        }
+
+        .container { 
+            display: flex; 
+            flex-wrap: wrap; 
+            justify-content: center; 
+            padding: 30px; 
+            gap: 25px;
+        }
+
+        .video-box { 
+            background: #000; 
+            padding: 8px; 
+            border-radius: 10px; 
+            border: 1px solid #2a2a2a; 
+            box-shadow: 0 15px 35px rgba(0,0,0,0.7);
+        }
+        
+        img { border-radius: 4px; display: block; }
+
+        .telemetry-grid { 
+            display: grid; 
+            grid-template-columns: 1fr 1fr; 
+            gap: 15px; 
+            min-width: 350px;
+        }
+
+        .card { 
+            background: #141418; 
+            padding: 20px; 
+            border-radius: 8px; 
+            border-left: 5px solid #4b0082; /* Indigo Sidebar */
+            text-align: left;
+        }
+
+        .label { color: #63636b; font-size: 0.75em; font-weight: 800; letter-spacing: 1px; }
+
+        .val { 
+            font-size: 2.4em; 
+            font-weight: 300; 
+            color: #ffffff; 
+            margin: 5px 0;
+        }
+
+        .unit { font-size: 0.4em; color: #4b0082; font-weight: bold; margin-left: 5px; }
     </style>
 </head>
 <body>
-    <h1>SYSTEM CORVUS - LIVE FEED</h1>
-    <img src="/video">
-    <div class="hud">
-        <div class="stat">TAG ID: <span id="tag">-</span></div>
-        <div class="stat">ALTITUDE: <span id="alt">0.0</span>m</div>
-        <div class="stat">BATTERY: <span id="bat">0</span>%</div>
+    <h1>CORVUS GROUND CONTROL</h1>
+    <div class="container">
+        <div class="video-box">
+            <img src="/live" width="640" height="480" />
+        </div>
+        
+        <div class="telemetry-grid">
+            <div class="card">
+                <div class="label">ALTITUDE</div>
+                <div class="val" id="alt">0.0<span class="unit">M</span></div>
+            </div>
+            <div class="card">
+                <div class="label">BATTERY</div>
+                <div class="val" id="batt">0<span class="unit">%</span></div>
+            </div>
+            <div class="card">
+                <div class="label">ROLL</div>
+                <div class="val" id="roll">0.0<span class="unit">°</span></div>
+            </div>
+            <div class="card">
+                <div class="label">PITCH</div>
+                <div class="val" id="pitch">0.0<span class="unit">°</span></div>
+            </div>
+        </div>
     </div>
 
     <script>
-        setInterval(() => {
-            fetch('/api/status').then(r => r.json()).then(data => {
-                document.getElementById('tag').innerText = data.tag_id == -1 ? "NONE" : data.tag_id;
-                document.getElementById('alt').innerText = data.alt.toFixed(1);
-                document.getElementById('bat').innerText = data.bat;
-            });
-        }, 200);
+        setInterval(async () => {
+            try {
+                const response = await fetch('/api/sensors');
+                const data = await response.json();
+                document.getElementById('alt').innerHTML = data.alt.toFixed(1) + '<span class="unit">M</span>';
+                document.getElementById('batt').innerHTML = data.batt.toFixed(0) + '<span class="unit">%</span>';
+                document.getElementById('roll').innerHTML = data.roll.toFixed(1) + '<span class="unit">°</span>';
+                document.getElementById('pitch').innerHTML = data.pitch.toFixed(1) + '<span class="unit">°</span>';
+            } catch(e) {}
+        }, 100);
     </script>
 </body>
 </html>
