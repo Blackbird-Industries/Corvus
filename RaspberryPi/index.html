@@ -37,7 +37,7 @@
             box-shadow: 0 15px 35px rgba(0,0,0,0.7);
         }
         
-        img { border-radius: 4px; display: block; }
+        img { border-radius: 4px; display: block; background: #111; }
 
         .telemetry-grid { 
             display: grid; 
@@ -70,7 +70,7 @@
     <h1>CORVUS GROUND CONTROL</h1>
     <div class="container">
         <div class="video-box">
-            <img src="/live" width="640" height="480" />
+            <img id="stream" src="" width="640" height="480" />
         </div>
         
         <div class="telemetry-grid">
@@ -94,16 +94,43 @@
     </div>
 
     <script>
-        setInterval(async () => {
+        // --- 1. LIVE VIDEO LOOP ---
+        const img = document.getElementById('stream');
+        function loadFrame() {
+            // Adding a timestamp prevents the browser from caching the frame
+            img.src = "/snapshot?t=" + new Date().getTime();
+        }
+        
+        // When one image finishes loading, wait 30ms and ask for the next
+        img.onload = () => setTimeout(loadFrame, 30); 
+        img.onerror = () => setTimeout(loadFrame, 1000); 
+        loadFrame();
+
+        // --- 2. WEBSOCKET TELEMETRY ---
+        const ws = new WebSocket('ws://' + location.host + '/ws');
+        
+        ws.onmessage = function(event) {
             try {
-                const response = await fetch('/api/sensors');
-                const data = await response.json();
+                const data = JSON.parse(event.data);
+                
+                // Update HTML elements using the keys from C++
                 document.getElementById('alt').innerHTML = data.alt.toFixed(1) + '<span class="unit">M</span>';
                 document.getElementById('batt').innerHTML = data.batt.toFixed(0) + '<span class="unit">%</span>';
                 document.getElementById('roll').innerHTML = data.roll.toFixed(1) + '<span class="unit">°</span>';
                 document.getElementById('pitch').innerHTML = data.pitch.toFixed(1) + '<span class="unit">°</span>';
-            } catch(e) {}
-        }, 100);
+            } catch (err) {
+                console.error("Error parsing telemetry:", err);
+            }
+        };
+
+        // Send a "heartbeat" to the server every 200ms to request fresh data
+        setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send('u');
+            }
+        }, 200);
+
+        ws.onclose = () => console.log("GCS Disconnected");
     </script>
 </body>
 </html>
