@@ -3,134 +3,51 @@
 <head>
     <title>CORVUS GCS</title>
     <style>
-        body { 
-            font-family: 'Segoe UI', Roboto, sans-serif; 
-            background: #0a0a0c; 
-            color: #d1d1d1; 
-            text-align: center; 
-            margin: 0; 
-        }
-        
-        h1 { 
-            background: #4b0082; /* Indigo Accent */
-            color: #ffffff; 
-            margin: 0; 
-            padding: 15px; 
-            font-size: 1.3em; 
-            letter-spacing: 3px;
-            box-shadow: 0 2px 20px rgba(75, 0, 130, 0.4);
-        }
-
-        .container { 
-            display: flex; 
-            flex-wrap: wrap; 
-            justify-content: center; 
-            padding: 30px; 
-            gap: 25px;
-        }
-
-        .video-box { 
-            background: #000; 
-            padding: 8px; 
-            border-radius: 10px; 
-            border: 1px solid #2a2a2a; 
-            box-shadow: 0 15px 35px rgba(0,0,0,0.7);
-        }
-        
-        img { border-radius: 4px; display: block; background: #111; }
-
-        .telemetry-grid { 
-            display: grid; 
-            grid-template-columns: 1fr 1fr; 
-            gap: 15px; 
-            min-width: 350px;
-        }
-
-        .card { 
-            background: #141418; 
-            padding: 20px; 
-            border-radius: 8px; 
-            border-left: 5px solid #4b0082; /* Indigo Sidebar */
-            text-align: left;
-        }
-
-        .label { color: #63636b; font-size: 0.75em; font-weight: 800; letter-spacing: 1px; }
-
-        .val { 
-            font-size: 2.4em; 
-            font-weight: 300; 
-            color: #ffffff; 
-            margin: 5px 0;
-        }
-
-        .unit { font-size: 0.4em; color: #4b0082; font-weight: bold; margin-left: 5px; }
+        body { font-family: 'Segoe UI', sans-serif; background: #0a0a0c; color: #d1d1d1; text-align: center; margin: 0; }
+        h1 { background: #4b0082; color: #fff; padding: 15px; font-size: 1.2em; letter-spacing: 2px; }
+        .container { display: flex; flex-wrap: wrap; justify-content: center; padding: 20px; gap: 20px; }
+        .video-box { background: #000; padding: 5px; border-radius: 8px; border: 1px solid #2a2a2a; }
+        .telemetry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-width: 320px; }
+        .card { background: #141418; padding: 15px; border-radius: 6px; border-left: 4px solid #4b0082; text-align: left; }
+        .tag-card { grid-column: span 2; border-left-color: #4b0082; background: #110d1a; }
+        .label { color: #63636b; font-size: 0.7em; font-weight: 800; }
+        .val { font-size: 2em; color: #fff; margin: 5px 0; }
+        .unit { font-size: 0.4em; color: #4b0082; margin-left: 4px; }
     </style>
 </head>
 <body>
     <h1>CORVUS GROUND CONTROL</h1>
     <div class="container">
-        <div class="video-box">
-            <img id="stream" src="" width="640" height="480" />
-        </div>
-        
+        <div class="video-box"><img id="stream" src="" width="640" height="480" /></div>
         <div class="telemetry-grid">
-            <div class="card">
-                <div class="label">ALTITUDE</div>
-                <div class="val" id="alt">0.0<span class="unit">M</span></div>
-            </div>
-            <div class="card">
-                <div class="label">BATTERY</div>
-                <div class="val" id="batt">0<span class="unit">%</span></div>
-            </div>
-            <div class="card">
-                <div class="label">ROLL</div>
-                <div class="val" id="roll">0.0<span class="unit">°</span></div>
-            </div>
-            <div class="card">
-                <div class="label">PITCH</div>
-                <div class="val" id="pitch">0.0<span class="unit">°</span></div>
+            <div class="card"><div class="label">ALTITUDE</div><div class="val" id="alt">0.0<span class="unit">M</span></div></div>
+            <div class="card"><div class="label">PITCH</div><div class="val" id="pitch">0.0<span class="unit">°</span></div></div>
+            <div class="card tag-card">
+                <div class="label">VISUAL TARGET</div>
+                <div class="val" id="tag_info">SCANNING...</div>
+                <div id="tag_desc" style="color:#8a8a8a; font-size:0.8em;">No AprilTag in view</div>
             </div>
         </div>
     </div>
-
     <script>
-        // --- 1. LIVE VIDEO LOOP ---
         const img = document.getElementById('stream');
-        function loadFrame() {
-            // Adding a timestamp prevents the browser from caching the frame
-            img.src = "/snapshot?t=" + new Date().getTime();
-        }
-        
-        // When one image finishes loading, wait 30ms and ask for the next
-        img.onload = () => setTimeout(loadFrame, 30); 
-        img.onerror = () => setTimeout(loadFrame, 1000); 
-        loadFrame();
+        function loadFrame() { img.src = "/snapshot?t=" + new Date().getTime(); }
+        img.onload = () => setTimeout(loadFrame, 30); loadFrame();
 
-        // --- 2. WEBSOCKET TELEMETRY ---
         const ws = new WebSocket('ws://' + location.host + '/ws');
-        
-        ws.onmessage = function(event) {
-            try {
-                const data = JSON.parse(event.data);
-                
-                // Update HTML elements using the keys from C++
-                document.getElementById('alt').innerHTML = data.alt.toFixed(1) + '<span class="unit">M</span>';
-                document.getElementById('batt').innerHTML = data.batt.toFixed(0) + '<span class="unit">%</span>';
-                document.getElementById('roll').innerHTML = data.roll.toFixed(1) + '<span class="unit">°</span>';
-                document.getElementById('pitch').innerHTML = data.pitch.toFixed(1) + '<span class="unit">°</span>';
-            } catch (err) {
-                console.error("Error parsing telemetry:", err);
+        ws.onmessage = (e) => {
+            const d = JSON.parse(e.data);
+            document.getElementById('alt').innerHTML = d.alt.toFixed(1) + '<span class="unit">M</span>';
+            document.getElementById('pitch').innerHTML = d.pitch.toFixed(1) + '<span class="unit">°</span>';
+            if (d.tag_id !== -1) {
+                document.getElementById('tag_info').innerText = "TAG " + d.tag_id;
+                document.getElementById('tag_desc').innerText = d.tag_desc;
+            } else {
+                document.getElementById('tag_info').innerText = "SCANNING...";
+                document.getElementById('tag_desc').innerText = "Searching for targets...";
             }
         };
-
-        // Send a "heartbeat" to the server every 200ms to request fresh data
-        setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send('u');
-            }
-        }, 200);
-
-        ws.onclose = () => console.log("GCS Disconnected");
+        setInterval(() => { if(ws.readyState===1) ws.send('u'); }, 200);
     </script>
 </body>
 </html>
