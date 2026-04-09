@@ -1,1 +1,52 @@
+#include <Servo.h>
 
+Servo esc;  // Create servo object to control the ESC/Motor
+int pulse = 1000; // Start at 1000us (Standard RC zero-throttle)
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Attach the ESC signal to Pin 9
+  esc.attach(9); 
+  
+  // Send the zero-throttle signal immediately so the ESC boots up happily
+  esc.writeMicroseconds(pulse); 
+  
+  Serial.println("=== Arduino RC Simulator Ready ===");
+  Serial.println("Send 'w' to INCREASE throttle (+50us)");
+  Serial.println("Send 's' to DECREASE throttle (-50us)");
+  Serial.println("Send 'x' for EMERGENCY STOP (Drop to 1000us)");
+  Serial.println("----------------------------------");
+}
+
+void loop() {
+  // Check if you typed something in the Serial Monitor
+  if (Serial.available() > 0) {
+    char inChar = Serial.read();
+    
+    // Increase Throttle
+    if (inChar == 'w' || inChar == 'W') {
+      pulse += 50;
+      if (pulse > 2000) pulse = 2000; // Cap at max RC limit
+    } 
+    // Decrease Throttle
+    else if (inChar == 's' || inChar == 'S') {
+      pulse -= 50;
+      if (pulse < 1000) pulse = 1000; // Cap at min RC limit
+    } 
+    // Kill Switch
+    else if (inChar == 'x' || inChar == 'X') {
+      pulse = 1000; 
+    }
+    
+    // Apply the new signal to the ESC
+    esc.writeMicroseconds(pulse);
+    
+    // Only print an update if a valid key was pressed (ignores "Enter" key presses)
+    if (inChar == 'w' || inChar == 'W' || inChar == 's' || inChar == 'S' || inChar == 'x' || inChar == 'X') {
+      Serial.print("Current RC Pulse: ");
+      Serial.print(pulse);
+      Serial.println(" us");
+    }
+  }
+}
