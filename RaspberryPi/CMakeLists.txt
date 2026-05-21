@@ -36,6 +36,7 @@ target_link_libraries(corvus_gcs PRIVATE
     MAVSDK::mavsdk
     ${APRILTAG_LIBRARIES}
     Threads::Threads
+    asound
 )
 
 # Optional: Add compiler flags for optimization on Pi 5
